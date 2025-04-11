@@ -1,18 +1,19 @@
+import time
+from concurrent.futures import ProcessPoolExecutor
+
+import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import silhouette_score
 from copkmeans.cop_kmeans import cop_kmeans
 from scipy.stats import ks_2samp
-import matplotlib.pyplot as plt
-from src.plot_utils import plot_metrics, plot_confidence
 from sklearn.cluster import KMeans
-from concurrent.futures import ProcessPoolExecutor
-import time
-
 from sklearn.metrics import (
-    rand_score,
     adjusted_rand_score,
     normalized_mutual_info_score,
+    rand_score,
+    silhouette_score,
 )
+
+from src.plot_utils import plot_confidence, plot_metrics
 
 
 def ks_distance(x, y):
@@ -47,14 +48,13 @@ class KS_KMeans:
         self.confidences = None
 
     def _most_distant_point(self, selected_vectors, all_vectors):
-        max_distance, most_distant_idx = -1, -1
-        for idx, vector in enumerate(all_vectors):
-            min_distance = min(
-                np.linalg.norm(np.array(vector) - np.array(selected_vector))
-                for selected_vector in selected_vectors
-            )
-            if min_distance > max_distance:
-                max_distance, most_distant_idx = min_distance, idx
+        selected_vectors = np.array(selected_vectors)
+        all_vectors = np.array(all_vectors)
+        distances = np.linalg.norm(
+            all_vectors[:, np.newaxis] - selected_vectors, axis=2
+        )
+        min_distances = np.min(distances, axis=1)
+        most_distant_idx = np.argmax(min_distances)
         return most_distant_idx
 
     def _calculate_distances(self, f):
@@ -135,11 +135,18 @@ class KS_KMeans:
 
     def predict(self, segments):
         distances = np.zeros((len(segments), self.basepoints_num))
-        for i in range(self.basepoints_num - 1):
-            basepoint_segment = self.segments[self.basepoints_idx[i]]
-            distances[:, i] = [
-                ks_distance(segment, basepoint_segment) for segment in segments
-            ]
+        basepoint_segments = [self.segments[idx] for idx in self.basepoints_idx]
+
+        with ProcessPoolExecutor() as executor:
+            futures = {
+                executor.submit(ks_distance, segment, basepoint_segment): (i, idx)
+                for i, basepoint_segment in enumerate(basepoint_segments)
+                for idx, segment in enumerate(segments)
+            }
+
+            for future in futures:
+                i, idx = futures[future]
+                distances[idx, i] = future.result()
 
         centers_array = np.array(self.centers)
         labels = np.argmin(
